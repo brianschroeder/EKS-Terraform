@@ -1,0 +1,149 @@
+pipeline {
+    agent any
+
+        parameters {
+        choice(name: 'environment', choices: ['dev' , 'prod'], description: 'AWS Environment to deploy EKS')
+        text(name: 'eks_cluster_name', defaultValue: 'cloudsre-eks-cluster', description: 'Name of EKS cluster.')
+        text(name: 'eks_cluster_region', defaultValue: 'us-east-1', description: 'Region to deploy EKS cluster.')
+        text(name: 'statefile', defaultValue: 'cloud-sre-eks.tfstate', description: 'Note: Environment will be appended to the beginning of the file. Terraform statefile used to manage EKS cluster.')
+        booleanParam(name: 'deployNewCluster', defaultValue: false, description: 'Define deploying a new cluster which will configure Calico networking and EBS CNI Plugin')
+        booleanParam(name: 'destroy', defaultValue: false, description: 'Destroy deployed EKS cluster.')
+    }
+
+    environment {
+        AWS_ACCESS_KEY_ID      = credentials("${env.environment == "dev" ? "AWS_ACCESS_KEY_ID_DEV" : "AWS_ACCESS_KEY_ID_PROD"}")
+        AWS_SECRET_ACCESS_KEY  = credentials("${env.environment == "dev" ? "AWS_SECRET_ACCESS_KEY_DEV" : "AWS_SECRET_ACCESS_KEY_PROD"}")
+        BITBUCKET_COMMON_CREDS = credentials('bbservice')
+        TFSTATE_BUCKET         = "${env.environment == "dev" ? "ux-tf-states" : "cloudsre-tf-states-prod"}"
+        EKS_REGION             = "${env.eks_cluster_region}"
+        EKS_STATEFILE          = "${env.environment}-${env.statefile}"
+    }
+
+    stages {
+
+    	stage('Devops master Checkout') {
+        	steps {
+           		script{
+                		git branch: 'main',  url: 'git repo url'
+            	}
+        	}
+        }
+
+        stage('New Cluster - Validation of exisiting cluster') {
+            when {
+                expression {
+                    deployNewCluster.toBoolean()
+                }
+            }
+            steps {
+                sh 'pwsh scripts/verifyExisitingCluster.ps1 -eks_cluster_region $eks_cluster_region -eks_cluster_name $eks_cluster_name'
+            }
+        }
+
+        stage('Terraform Plan - New Cluster') {
+            when {
+                expression {
+                    deployNewCluster.toBoolean()
+                }
+            }
+            steps {
+                sh 'cd infrastructure && terraform init -reconfigure -upgrade -backend-config="bucket=${TFSTATE_BUCKET}" -backend-config="region=${EKS_REGION}" -backend-config="key=${EKS_STATEFILE}" -no-color -input=false'
+                sh 'cd infrastructure && terraform plan -no-color -var environment=$environment -var aws_region=$eks_cluster_region -var cluster-name=$eks_cluster_name -var deploy-nodegroups=false -var deploy-eksaddons=false -input=false -out tfplan'
+                sh 'cd infrastructure && terraform show -no-color tfplan > tfplan.txt'
+            }
+        }
+
+        stage('Terraform Approval - New Cluster') {
+            when {
+               not {
+                   equals expected: true, actual: params.autoApprove
+               }
+               not {
+                    equals expected: true, actual: params.destroy
+                }
+
+                expression {
+                    deployNewCluster.toBoolean()
+                }
+            }
+            steps {
+                script {
+                    def plan = readFile 'infrastructure/tfplan.txt'
+                    input message: "Do you want to apply the plan?",
+                    parameters: [text(name: 'Plan', description: 'Please review the plan', defaultValue: plan)]
+                }
+            }
+        }
+
+        stage('Terraform Apply - New Cluster') {
+            when {
+                expression {
+                    deployNewCluster.toBoolean()
+                }
+            }
+            steps {
+                sh 'cd infrastructure && terraform apply -no-color -input=false tfplan'
+            }
+        }
+
+        stage('Calico Network Configuration - New Cluster') {
+            when {
+                expression {
+                    deployNewCluster.toBoolean()
+                }
+            }
+            steps {
+                sh 'chmod 750 scripts/calicoNetworkingConfig.sh'
+                sh './scripts/calicoNetworkingConfig.sh $eks_cluster_region $eks_cluster_name'
+            }
+        }
+        
+        stage('Terraform Plan') {
+
+            steps {
+                sh 'cd infrastructure && terraform init -reconfigure -upgrade -backend-config="bucket=${TFSTATE_BUCKET}" -backend-config="region=${EKS_REGION}" -backend-config="key=${EKS_STATEFILE}" -no-color -input=false'
+                sh 'cd infrastructure && terraform plan -no-color -var environment=$environment -var aws_region=$eks_cluster_region -var cluster-name=$eks_cluster_name -input=false -out tfplan'
+                sh 'cd infrastructure && terraform show -no-color tfplan > tfplan.txt'
+            }
+        }
+
+        stage('Terraform Approval') {
+            when {
+               not {
+                   equals expected: true, actual: params.autoApprove
+               }
+               not {
+                    equals expected: true, actual: params.destroy
+                }
+            }
+            steps {
+                script {
+                    def plan = readFile 'infrastructure/tfplan.txt'
+                    input message: "Do you want to apply the plan?",
+                    parameters: [text(name: 'Plan', description: 'Please review the plan', defaultValue: plan)]
+                }
+            }
+        }
+
+        stage('Terraform Apply') {
+            when {
+                not {
+                    equals expected: true, actual: params.destroy
+                }
+            }
+            steps {
+                sh 'cd infrastructure && terraform apply -no-color -input=false tfplan'
+            }
+        }
+        
+        stage('Terraform Destroy') {
+            when {
+                equals expected: true, actual: params.destroy
+            }
+        
+        steps {
+           sh "cd infrastructure && terraform destroy -var environment=$environment --auto-approve"
+        }
+    }
+
+  }
