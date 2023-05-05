@@ -1,20 +1,20 @@
 pipeline {
     agent any
 
-        parameters {
+    parameters {
         choice(name: 'environment', choices: ['dev' , 'prod'], description: 'AWS Environment to deploy EKS')
-        text(name: 'eks_cluster_name', defaultValue: 'cloudsre-eks-cluster', description: 'Name of EKS cluster.')
+        text(name: 'eks_cluster_name', defaultValue: 'eks-cluster', description: 'Name of EKS cluster.')
         text(name: 'eks_cluster_region', defaultValue: 'us-east-1', description: 'Region to deploy EKS cluster.')
-        text(name: 'statefile', defaultValue: 'cloud-sre-eks.tfstate', description: 'Note: Environment will be appended to the beginning of the file. Terraform statefile used to manage EKS cluster.')
+        text(name: 'statefile', defaultValue: 'eks-cluster.tfstate', description: 'Note: Environment will be appended to the beginning of the file. Terraform statefile used to manage EKS cluster.')
         booleanParam(name: 'deployNewCluster', defaultValue: false, description: 'Define deploying a new cluster which will configure Calico networking and EBS CNI Plugin')
         booleanParam(name: 'destroy', defaultValue: false, description: 'Destroy deployed EKS cluster.')
     }
 
     environment {
-        AWS_ACCESS_KEY_ID      = credentials("${env.environment == "dev" ? "AWS_ACCESS_KEY_ID_DEV" : "AWS_ACCESS_KEY_ID_PROD"}")
-        AWS_SECRET_ACCESS_KEY  = credentials("${env.environment == "dev" ? "AWS_SECRET_ACCESS_KEY_DEV" : "AWS_SECRET_ACCESS_KEY_PROD"}")
-        BITBUCKET_COMMON_CREDS = credentials('bbservice')
-        TFSTATE_BUCKET         = "${env.environment == "dev" ? "ux-tf-states" : "cloudsre-tf-states-prod"}"
+        AWS_ACCESS_KEY_ID      = credentials("${env.environment == "dev" ? "AWS_DEV_ID" : "AWS_PROD_ID"}")
+        AWS_SECRET_ACCESS_KEY  = credentials("${env.environment == "dev" ? "AWS_SECRET_DEV" : "AWS_SECRET_PROD"}")
+        BITBUCKET_COMMON_CREDS = credentials('bitbucketcreds')
+        TFSTATE_BUCKET         = "${env.environment == "dev" ? "dev-s3" : "prod-s3"}"
         EKS_REGION             = "${env.eks_cluster_region}"
         EKS_STATEFILE          = "${env.environment}-${env.statefile}"
     }
